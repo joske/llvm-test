@@ -1,9 +1,6 @@
 use llvm_sys::{bit_writer::LLVMWriteBitcodeToFile, core::*, prelude::*, target::*, LLVMLinkage};
-use std::{
-    ffi::{CStr, CString},
-    fs::File,
-    io::Write,
-};
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 
 #[macro_export]
 macro_rules! cstr {
@@ -11,7 +8,7 @@ macro_rules! cstr {
         // We use `concat!` to join the literal and a "\0" at compile time.
         // Then `.as_ptr()` to get a pointer to the bytes,
         // and cast to *const i8 (LLVM-style C-char).
-        concat!($lit, "\0").as_ptr() as *const i8
+        concat!($lit, "\0").as_ptr() as *const c_char
     }};
 }
 
@@ -61,7 +58,7 @@ fn main() {
         let ir_str_ptr = LLVMPrintModuleToString(module);
         let ir_str = CStr::from_ptr(ir_str_ptr);
         println!("Generated LLVM IR:\n{}", ir_str.to_string_lossy());
-        LLVMWriteBitcodeToFile(module, b"output.ll\0".as_ptr().cast());
+        LLVMWriteBitcodeToFile(module, "output.ll".as_ptr().cast());
         LLVMDisposeMessage(ir_str_ptr); // must free the string
 
         // --- 8) Clean up ---
