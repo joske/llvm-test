@@ -24,7 +24,8 @@ fn main() {
         let module_name = cstr!("my_module");
         let module = LLVMModuleCreateWithNameInContext(module_name, context);
 
-        create_export_data(context, module);
+        add_polkavm_export_data_for_fn(module, context, "sum");
+        add_polkavm_metadata(module, context, "sum", 2);
 
         // --- 3) Create the signature of our function: i32 sum(i32, i32) ---
         let i32_type = LLVMInt32TypeInContext(context);
@@ -68,36 +69,77 @@ fn main() {
     }
 }
 
-/// Creates a global array of 9 bytes: [1, 0, 0, 0, 0, 0, 0, 0, 0],
-/// and places it in the .polkavm_exports section.
-unsafe fn create_export_data(context: LLVMContextRef, module: LLVMModuleRef) {
-    // 1) Define the array type: [9 x i8]
-    let num_bytes = 9u64;
-    let i8_ty = LLVMInt8TypeInContext(context);
-    let array_ty = LLVMArrayType2(i8_ty, num_bytes);
+unsafe fn add_polkavm_metadata(
+    module: LLVMModuleRef,
+    context: LLVMContextRef,
+    fn_name: &str,
+    args: u8,
+) -> LLVMValueRef {
+    let i8_type = LLVMInt8TypeInContext(context);
+    let i32_type = LLVMInt32TypeInContext(context);
+    let array_type = LLVMArrayType2(i8_type, 15);
 
-    // 2) Build a constant initializer: [1, 0, 0, 0, 0, 0, 0, 0, 0]
-    let data = [1, 0, 0, 0, 0, 0, 0, 0, 0];
-    let mut values = Vec::with_capacity(data.len());
-    for &b in &data {
-        let c = LLVMConstInt(i8_ty, b as u64, 0); // 0 => unsigned
-        values.push(c);
+    // We'll name the global like "<fn_name>_export_data" or something
+    let global_name = CString::new(format!("{}_export_data", fn_name)).unwrap();
+    let global = LLVMAddGlobal(module, array_type, global_name.as_ptr());
+
+    // Place it in the .polkavm_exports section
+    LLVMSetSection(global, cstr!(".polkavm_metadata"));
+
+    // Initialize first byte = 1, next 8 = 0
+    let mut bytes = Vec::with_capacity(9);
+    bytes.push(LLVMConstInt(i8_type, 1, 0));
+    for _ in 0..3 {
+        bytes.push(LLVMConstInt(i8_type, 0, 0));
     }
-    let init_array = LLVMConstArray2(i8_ty, values.as_mut_ptr(), values.len() as u64);
+    // symbol name length
+    bytes.push(LLVMConstInt(i32_type, fn_name.len() as u64, 0));
+    // pointer seems to be 0
+    for _ in 0..3 {
+        bytes.push(LLVMConstInt(i8_type, 0, 0));
+    }
+    // input
+    bytes.push(LLVMConstInt(i8_type, args as u64, 0));
+    // output
+    bytes.push(LLVMConstInt(i8_type, 1, 0));
 
-    // 3) Create a new global with that array type
-    let global_name = cstr!("my_export_data");
-    let global = LLVMAddGlobal(module, array_ty, global_name);
-
-    // 4) Set the initializer
+    let init_array = LLVMConstArray2(i8_type, bytes.as_mut_ptr(), bytes.len() as u64);
     LLVMSetInitializer(global, init_array);
 
-    // 5) Place it in the custom section
-    let section_name = cstr!(".polkavm_exports");
-    LLVMSetSection(global, section_name);
-
-    // 6) Adjust linkage to ensure it isn't optimized away
-    //    - ExternalLinkage means it's "public"; you could also use InternalLinkage
-    //      if you prefer, but then you'll want to ensure it's not removed by LTO.
+    // Possibly mark the global as internal, so the symbol won't clash
     LLVMSetLinkage(global, LLVMLinkage::LLVMExternalLinkage);
+
+    global
+}
+
+/// Creates a 9-byte global in `.polkavm_exports`.
+///  Byte[0] = 1, Byte[1..8] = 0.
+unsafe fn add_polkavm_export_data_for_fn(
+    module: LLVMModuleRef,
+    context: LLVMContextRef,
+    fn_name: &str,
+) -> LLVMValueRef {
+    let i8_type = LLVMInt8TypeInContext(context);
+    let array_type = LLVMArrayType2(i8_type, 9);
+
+    // We'll name the global like "<fn_name>_export_data" or something
+    let global_name = CString::new(format!("{}_export_data", fn_name)).unwrap();
+    let global = LLVMAddGlobal(module, array_type, global_name.as_ptr());
+
+    // Place it in the .polkavm_exports section
+    LLVMSetSection(global, cstr!(".polkavm_exports"));
+
+    // Initialize first byte = 1, next 8 = 0
+    let mut bytes = Vec::with_capacity(9);
+    bytes.push(LLVMConstInt(i8_type, 1, 0));
+    for _ in 0..8 {
+        bytes.push(LLVMConstInt(i8_type, 0, 0));
+    }
+    let init_array = LLVMConstArray2(i8_type, bytes.as_mut_ptr(), bytes.len() as u64);
+    LLVMSetInitializer(global, init_array);
+
+    // Possibly mark the global as internal, so the symbol won't clash
+    LLVMSetLinkage(global, LLVMLinkage::LLVMExternalLinkage);
+
+    global
 }
