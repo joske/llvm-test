@@ -76,26 +76,30 @@ unsafe fn add_polkavm_metadata(
     args: u8,
 ) -> LLVMValueRef {
     let i8_type = LLVMInt8TypeInContext(context);
-    let i32_type = LLVMInt32TypeInContext(context);
     let array_type = LLVMArrayType2(i8_type, 15);
 
     // We'll name the global like "<fn_name>_export_data" or something
-    let global_name = CString::new(format!("{}_export_data", fn_name)).unwrap();
+    let global_name = CString::new(format!("{}_metadata", fn_name)).unwrap();
     let global = LLVMAddGlobal(module, array_type, global_name.as_ptr());
 
     // Place it in the .polkavm_exports section
     LLVMSetSection(global, cstr!(".polkavm_metadata"));
 
-    // Initialize first byte = 1, next 8 = 0
-    let mut bytes = Vec::with_capacity(9);
+    let mut bytes = Vec::with_capacity(15);
+
+    // version
     bytes.push(LLVMConstInt(i8_type, 1, 0));
-    for _ in 0..3 {
+    // flags
+    for _ in 0..4 {
         bytes.push(LLVMConstInt(i8_type, 0, 0));
     }
     // symbol name length
-    bytes.push(LLVMConstInt(i32_type, fn_name.len() as u64, 0));
+    bytes.push(LLVMConstInt(i8_type, 0, 0));
+    bytes.push(LLVMConstInt(i8_type, 0, 0));
+    bytes.push(LLVMConstInt(i8_type, 0, 0));
+    bytes.push(LLVMConstInt(i8_type, fn_name.len() as u64, 0));
     // pointer seems to be 0
-    for _ in 0..3 {
+    for _ in 0..4 {
         bytes.push(LLVMConstInt(i8_type, 0, 0));
     }
     // input
