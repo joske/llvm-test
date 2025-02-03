@@ -1,4 +1,3 @@
-use llvm_sys::LLVMVisibility;
 use llvm_sys::{core::*, prelude::*, target::*, LLVMLinkage};
 use std::ffi::{CStr, CString};
 use std::fs::File;
@@ -27,8 +26,33 @@ fn main() {
         let module_name = cstr!("my_module");
         let module = LLVMModuleCreateWithNameInContext(module_name, context);
 
-        add_polkavm_export_data_for_fn(module, context, "sum");
-        add_polkavm_metadata(module, context, "sum", 2);
+        let builder = add_function(context, module, "sum");
+
+        // --- 7) Print out the module as LLVM IR ---
+        let ir_str_ptr = LLVMPrintModuleToString(module);
+        let ir_str = CStr::from_ptr(ir_str_ptr);
+        println!("Generated LLVM IR:\n{}", ir_str.to_string_lossy());
+        File::create("output.ll")
+            .unwrap()
+            .write_all(ir_str.to_bytes())
+            .unwrap();
+        LLVMDisposeMessage(ir_str_ptr); // must free the string
+
+        // --- 8) Clean up ---
+        LLVMDisposeBuilder(builder);
+        LLVMDisposeModule(module);
+        LLVMContextDispose(context);
+    }
+}
+
+fn add_function(
+    context: *mut llvm_sys::LLVMContext,
+    module: *mut llvm_sys::LLVMModule,
+    name: &str,
+) -> *mut llvm_sys::LLVMBuilder {
+    unsafe {
+        add_polkavm_export_data_for_fn(module, context, name);
+        add_polkavm_metadata(module, context, name, 2);
 
         // --- 3) Create the signature of our function: i32 sum(i32, i32) ---
         let i32_type = LLVMInt32TypeInContext(context);
@@ -39,8 +63,8 @@ fn main() {
             param_types.len() as u32,
             0, // not variadic
         );
-        let fn_name = cstr!("sum");
-        let function = LLVMAddFunction(module, fn_name, fn_type);
+        let fn_name = CString::new(name).unwrap();
+        let function = LLVMAddFunction(module, fn_name.as_ptr(), fn_type);
         // Set the custom section
         let section_name = CString::new(".text.polkavm_export.sum").unwrap();
         LLVMSetSection(function, section_name.as_ptr());
@@ -57,21 +81,7 @@ fn main() {
 
         // --- 6) Return the result ---
         LLVMBuildRet(builder, sum);
-
-        // --- 7) Print out the module as LLVM IR ---
-        let ir_str_ptr = LLVMPrintModuleToString(module);
-        let ir_str = CStr::from_ptr(ir_str_ptr);
-        println!("Generated LLVM IR:\n{}", ir_str.to_string_lossy());
-        File::create("output.ll")
-            .unwrap()
-            .write_all(ir_str.to_bytes())
-            .unwrap();
-        LLVMDisposeMessage(ir_str_ptr); // must free the string
-
-        // --- 8) Clean up ---
-        LLVMDisposeBuilder(builder);
-        LLVMDisposeModule(module);
-        LLVMContextDispose(context);
+        builder
     }
 }
 
@@ -93,7 +103,7 @@ unsafe fn add_polkavm_metadata(
     );
     LLVMSetSection(
         metadata_global,
-        CString::new(".polkavm_metadata").unwrap().as_ptr(),
+        CString::new(".lanon_metadata").unwrap().as_ptr(),
     );
     LLVMSetInitializer(
         metadata_global,
