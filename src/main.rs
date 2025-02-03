@@ -36,13 +36,13 @@ fn main() {
         LLVMBuildRet(builder, sum);
 
         let (builder, function) = add_function(context, module, "mul");
-        // --- 5) Get the function's parameters & build "sum" = a0 + a1 ---
+        // --- 5) Get the function's parameters & build "mul" = a0 * a1 ---
         let a0 = LLVMGetParam(function, 0);
         let a1 = LLVMGetParam(function, 1);
-        let sum = LLVMBuildMul(builder, a0, a1, cstr!("tmp"));
+        let mul = LLVMBuildMul(builder, a0, a1, cstr!("tmp"));
 
         // --- 6) Return the result ---
-        LLVMBuildRet(builder, sum);
+        LLVMBuildRet(builder, mul);
 
         // --- 7) Print out the module as LLVM IR ---
         let ir_str_ptr = LLVMPrintModuleToString(module);
@@ -70,7 +70,6 @@ fn add_function(
         add_polkavm_export_data_for_fn(module, context, name);
         add_polkavm_metadata(module, context, name, 2);
 
-        // --- 3) Create the signature of our function: i32 sum(i32, i32) ---
         let i32_type = LLVMInt32TypeInContext(context);
         let param_types = [i32_type, i32_type];
         let fn_type = LLVMFunctionType(
