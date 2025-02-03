@@ -26,7 +26,23 @@ fn main() {
         let module_name = cstr!("my_module");
         let module = LLVMModuleCreateWithNameInContext(module_name, context);
 
-        let builder = add_function(context, module, "sum");
+        let (builder, function) = add_function(context, module, "sum");
+        // --- 5) Get the function's parameters & build "sum" = a0 + a1 ---
+        let a0 = LLVMGetParam(function, 0);
+        let a1 = LLVMGetParam(function, 1);
+        let sum = LLVMBuildAdd(builder, a0, a1, cstr!("tmp"));
+
+        // --- 6) Return the result ---
+        LLVMBuildRet(builder, sum);
+
+        let (builder, function) = add_function(context, module, "mul");
+        // --- 5) Get the function's parameters & build "sum" = a0 + a1 ---
+        let a0 = LLVMGetParam(function, 0);
+        let a1 = LLVMGetParam(function, 1);
+        let sum = LLVMBuildMul(builder, a0, a1, cstr!("tmp"));
+
+        // --- 6) Return the result ---
+        LLVMBuildRet(builder, sum);
 
         // --- 7) Print out the module as LLVM IR ---
         let ir_str_ptr = LLVMPrintModuleToString(module);
@@ -49,7 +65,7 @@ fn add_function(
     context: *mut llvm_sys::LLVMContext,
     module: *mut llvm_sys::LLVMModule,
     name: &str,
-) -> *mut llvm_sys::LLVMBuilder {
+) -> (*mut llvm_sys::LLVMBuilder, *mut llvm_sys::LLVMValue) {
     unsafe {
         add_polkavm_export_data_for_fn(module, context, name);
         add_polkavm_metadata(module, context, name, 2);
@@ -66,7 +82,7 @@ fn add_function(
         let fn_name = CString::new(name).unwrap();
         let function = LLVMAddFunction(module, fn_name.as_ptr(), fn_type);
         // Set the custom section
-        let section_name = CString::new(".text.polkavm_export.sum").unwrap();
+        let section_name = CString::new(format!(".text.polkavm_export.{}", name)).unwrap();
         LLVMSetSection(function, section_name.as_ptr());
 
         // --- 4) Create a basic block & a builder to emit instructions ---
@@ -74,14 +90,7 @@ fn add_function(
         let builder = LLVMCreateBuilderInContext(context);
         LLVMPositionBuilderAtEnd(builder, entry_bb);
 
-        // --- 5) Get the function's parameters & build "sum" = a0 + a1 ---
-        let a0 = LLVMGetParam(function, 0);
-        let a1 = LLVMGetParam(function, 1);
-        let sum = LLVMBuildAdd(builder, a0, a1, cstr!("sumtmp"));
-
-        // --- 6) Return the result ---
-        LLVMBuildRet(builder, sum);
-        builder
+        (builder, function)
     }
 }
 
@@ -103,7 +112,9 @@ unsafe fn add_polkavm_metadata(
     );
     LLVMSetSection(
         metadata_global,
-        CString::new(".lanon_metadata").unwrap().as_ptr(),
+        CString::new(format!(".rodata.{}_metadata", fn_name))
+            .unwrap()
+            .as_ptr(),
     );
     LLVMSetInitializer(
         metadata_global,
