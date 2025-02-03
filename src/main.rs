@@ -1,4 +1,4 @@
-use llvm_sys::{core::*, prelude::*, target::*, LLVMLinkage};
+use llvm_sys::{core::*, prelude::*, target::*};
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Write;
@@ -67,7 +67,6 @@ fn add_function(
     name: &str,
 ) -> (*mut llvm_sys::LLVMBuilder, *mut llvm_sys::LLVMValue) {
     unsafe {
-        add_polkavm_export_data_for_fn(module, context, name);
         add_polkavm_metadata(module, context, name, 2);
 
         let i32_type = LLVMInt32TypeInContext(context);
@@ -98,7 +97,7 @@ unsafe fn add_polkavm_metadata(
     context: LLVMContextRef,
     fn_name: &str,
     num_args: u8,
-) -> LLVMValueRef {
+) {
     // Create the metadata
     let metadata_str = CString::new(fn_name).unwrap();
     let metadata_global = LLVMAddGlobal(
@@ -161,37 +160,29 @@ unsafe fn add_polkavm_metadata(
         CString::new(".polkavm_metadata").unwrap().as_ptr(),
     );
 
-    metadata_global
-}
+    // now add the exports
+    let exports_struct = LLVMStructType(
+        [
+            LLVMInt8Type(),
+            LLVMPointerType(LLVMInt8Type(), 0),
+            LLVMPointerType(LLVMInt8Type(), 0),
+        ]
+        .as_mut_ptr(),
+        3,
+        0,
+    );
+    let mut exports_values = [
+        LLVMConstInt(LLVMInt8Type(), 1, 0), // version
+        LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
+        LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
+    ];
 
-/// Creates a 9-byte global in `.polkavm_exports`.
-///  Byte[0] = 1, Byte[1..8] = 0.
-unsafe fn add_polkavm_export_data_for_fn(
-    module: LLVMModuleRef,
-    context: LLVMContextRef,
-    fn_name: &str,
-) -> LLVMValueRef {
-    let i8_type = LLVMInt8TypeInContext(context);
-    let array_type = LLVMArrayType2(i8_type, 9);
-
-    // We'll name the global like "<fn_name>_export_data" or something
-    let global_name = CString::new(format!("{}_export_data", fn_name)).unwrap();
-    let global = LLVMAddGlobal(module, array_type, global_name.as_ptr());
-
-    // Place it in the .polkavm_exports section
-    LLVMSetSection(global, cstr!(".polkavm_exports"));
-
-    // Initialize first byte = 1, next 8 = 0
-    let mut bytes = Vec::with_capacity(9);
-    bytes.push(LLVMConstInt(i8_type, 1, 0));
-    for _ in 0..8 {
-        bytes.push(LLVMConstInt(i8_type, 0, 0));
-    }
-    let init_array = LLVMConstArray2(i8_type, bytes.as_mut_ptr(), bytes.len() as u64);
-    LLVMSetInitializer(global, init_array);
-
-    // Possibly mark the global as internal, so the symbol won't clash
-    LLVMSetLinkage(global, LLVMLinkage::LLVMExternalLinkage);
-
-    global
+    let exports_constant = LLVMConstNamedStruct(exports_struct, exports_values.as_mut_ptr(), 3);
+    let exports = LLVMAddGlobal(
+        module,
+        exports_struct,
+        CString::new("exports").unwrap().as_ptr(),
+    );
+    LLVMSetInitializer(exports, exports_constant);
+    LLVMSetSection(exports, CString::new(".polkavm_exports").unwrap().as_ptr());
 }
