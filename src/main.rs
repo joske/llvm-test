@@ -35,14 +35,14 @@ fn main() {
         // --- 6) Return the result ---
         LLVMBuildRet(builder, sum);
 
-        let (builder, function) = add_function(context, module, "mul");
-        // --- 5) Get the function's parameters & build "mul" = a0 * a1 ---
+        let (builder, function) = add_function(context, module, "sub");
+        // --- 5) Get the function's parameters & build "mul" = a0 - a1 ---
         let a0 = LLVMGetParam(function, 0);
         let a1 = LLVMGetParam(function, 1);
-        let mul = LLVMBuildMul(builder, a0, a1, cstr!("tmp"));
+        let sub = LLVMBuildSub(builder, a0, a1, cstr!("tmp"));
 
         // --- 6) Return the result ---
-        LLVMBuildRet(builder, mul);
+        LLVMBuildRet(builder, sub);
 
         // --- 7) Print out the module as LLVM IR ---
         let ir_str_ptr = LLVMPrintModuleToString(module);
