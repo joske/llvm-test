@@ -1,5 +1,8 @@
-use llvm_sys::{bit_writer::LLVMWriteBitcodeToFile, core::*, prelude::*, target::*, LLVMLinkage};
+use llvm_sys::LLVMVisibility;
+use llvm_sys::{core::*, prelude::*, target::*, LLVMLinkage};
 use std::ffi::{CStr, CString};
+use std::fs::File;
+use std::io::Write;
 use std::os::raw::c_char;
 
 #[macro_export]
@@ -59,7 +62,10 @@ fn main() {
         let ir_str_ptr = LLVMPrintModuleToString(module);
         let ir_str = CStr::from_ptr(ir_str_ptr);
         println!("Generated LLVM IR:\n{}", ir_str.to_string_lossy());
-        LLVMWriteBitcodeToFile(module, "output.ll".as_ptr().cast());
+        File::create("output.ll")
+            .unwrap()
+            .write_all(ir_str.to_bytes())
+            .unwrap();
         LLVMDisposeMessage(ir_str_ptr); // must free the string
 
         // --- 8) Clean up ---
@@ -73,7 +79,7 @@ unsafe fn add_polkavm_metadata(
     module: LLVMModuleRef,
     context: LLVMContextRef,
     fn_name: &str,
-    args: u8,
+    num_args: u8,
 ) -> LLVMValueRef {
     let i8_type = LLVMInt8TypeInContext(context);
     let array_type = LLVMArrayType2(i8_type, 15);
@@ -82,7 +88,7 @@ unsafe fn add_polkavm_metadata(
     let global_name = CString::new(format!("{}_metadata", fn_name)).unwrap();
     let global = LLVMAddGlobal(module, array_type, global_name.as_ptr());
 
-    // Place it in the .polkavm_exports section
+    // Place it in the .polkavm_metadata section
     LLVMSetSection(global, cstr!(".polkavm_metadata"));
 
     let mut bytes = Vec::with_capacity(15);
@@ -103,15 +109,16 @@ unsafe fn add_polkavm_metadata(
         bytes.push(LLVMConstInt(i8_type, 0, 0));
     }
     // input
-    bytes.push(LLVMConstInt(i8_type, args as u64, 0));
+    bytes.push(LLVMConstInt(i8_type, num_args as u64, 0));
     // output
     bytes.push(LLVMConstInt(i8_type, 1, 0));
 
     let init_array = LLVMConstArray2(i8_type, bytes.as_mut_ptr(), bytes.len() as u64);
     LLVMSetInitializer(global, init_array);
 
-    // Possibly mark the global as internal, so the symbol won't clash
     LLVMSetLinkage(global, LLVMLinkage::LLVMExternalLinkage);
+    LLVMSetVisibility(global, LLVMVisibility::LLVMDefaultVisibility);
+    LLVMSetGlobalConstant(global, 0);
 
     global
 }
