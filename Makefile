@@ -1,2 +1,2 @@
 all:
-	cargo run && clang -c -fno-unwind-tables -fno-exceptions output.ll
+	cargo run && llc -o output.o -filetype=obj -exception-model=default output.ll
