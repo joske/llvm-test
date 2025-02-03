@@ -81,46 +81,67 @@ unsafe fn add_polkavm_metadata(
     fn_name: &str,
     num_args: u8,
 ) -> LLVMValueRef {
-    let i8_type = LLVMInt8TypeInContext(context);
-    let array_type = LLVMArrayType2(i8_type, 15);
+    // Create the metadata
+    let metadata_str = CString::new(fn_name).unwrap();
+    let metadata_global = LLVMAddGlobal(
+        module,
+        LLVMArrayType2(
+            LLVMInt8TypeInContext(context),
+            metadata_str.as_bytes().len() as u64 + 1,
+        ),
+        CString::new("metadata_symbol").unwrap().as_ptr(),
+    );
+    LLVMSetSection(
+        metadata_global,
+        CString::new(".polkavm_metadata").unwrap().as_ptr(),
+    );
+    LLVMSetInitializer(
+        metadata_global,
+        LLVMConstString(
+            metadata_str.as_ptr(),
+            metadata_str.as_bytes().len() as u32,
+            0,
+        ),
+    );
 
-    // We'll name the global like "<fn_name>_export_data" or something
-    let global_name = CString::new(format!("{}_metadata", fn_name)).unwrap();
-    let global = LLVMAddGlobal(module, array_type, global_name.as_ptr());
+    // Define metadata structure
+    let metadata_struct = LLVMStructType(
+        [
+            LLVMInt8Type(),
+            LLVMInt32Type(),
+            LLVMInt32Type(),
+            LLVMPointerType(LLVMInt8Type(), 0),
+            LLVMInt8Type(),
+            LLVMInt8Type(),
+        ]
+        .as_mut_ptr(),
+        6,
+        0,
+    );
 
-    // Place it in the .polkavm_metadata section
-    LLVMSetSection(global, cstr!(".polkavm_metadata"));
+    // Initialize metadata with values
+    let mut metadata_values = [
+        LLVMConstInt(LLVMInt8Type(), 1, 0),  // version
+        LLVMConstInt(LLVMInt32Type(), 0, 0), // flags
+        LLVMConstInt(LLVMInt32Type(), metadata_str.as_bytes().len() as u64, 0), // symbol length
+        LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
+        LLVMConstInt(LLVMInt8Type(), num_args as u64, 0),
+        LLVMConstInt(LLVMInt8Type(), 1, 0),
+    ];
 
-    let mut bytes = Vec::with_capacity(15);
+    let metadata_constant = LLVMConstNamedStruct(metadata_struct, metadata_values.as_mut_ptr(), 6);
+    let metadata = LLVMAddGlobal(
+        module,
+        metadata_struct,
+        CString::new("metadata").unwrap().as_ptr(),
+    );
+    LLVMSetInitializer(metadata, metadata_constant);
+    LLVMSetSection(
+        metadata,
+        CString::new(".polkavm_metadata").unwrap().as_ptr(),
+    );
 
-    // version
-    bytes.push(LLVMConstInt(i8_type, 1, 0));
-    // flags
-    for _ in 0..4 {
-        bytes.push(LLVMConstInt(i8_type, 0, 0));
-    }
-    // symbol name length
-    bytes.push(LLVMConstInt(i8_type, 0, 0));
-    bytes.push(LLVMConstInt(i8_type, 0, 0));
-    bytes.push(LLVMConstInt(i8_type, 0, 0));
-    bytes.push(LLVMConstInt(i8_type, fn_name.len() as u64, 0));
-    // pointer seems to be 0
-    for _ in 0..4 {
-        bytes.push(LLVMConstInt(i8_type, 0, 0));
-    }
-    // input
-    bytes.push(LLVMConstInt(i8_type, num_args as u64, 0));
-    // output
-    bytes.push(LLVMConstInt(i8_type, 1, 0));
-
-    let init_array = LLVMConstArray2(i8_type, bytes.as_mut_ptr(), bytes.len() as u64);
-    LLVMSetInitializer(global, init_array);
-
-    LLVMSetLinkage(global, LLVMLinkage::LLVMExternalLinkage);
-    LLVMSetVisibility(global, LLVMVisibility::LLVMDefaultVisibility);
-    LLVMSetGlobalConstant(global, 0);
-
-    global
+    metadata_global
 }
 
 /// Creates a 9-byte global in `.polkavm_exports`.
