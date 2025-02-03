@@ -67,8 +67,6 @@ fn add_function(
     name: &str,
 ) -> (*mut llvm_sys::LLVMBuilder, *mut llvm_sys::LLVMValue) {
     unsafe {
-        add_polkavm_metadata(module, context, name, 2);
-
         let i32_type = LLVMInt32TypeInContext(context);
         let param_types = [i32_type, i32_type];
         let fn_type = LLVMFunctionType(
@@ -83,6 +81,8 @@ fn add_function(
         let section_name = CString::new(format!(".text.polkavm_export.{}", name)).unwrap();
         LLVMSetSection(function, section_name.as_ptr());
 
+        add_polkavm_metadata(module, context, function, name, 2);
+
         // --- 4) Create a basic block & a builder to emit instructions ---
         let entry_bb = LLVMAppendBasicBlockInContext(context, function, cstr!("entry"));
         let builder = LLVMCreateBuilderInContext(context);
@@ -95,6 +95,7 @@ fn add_function(
 unsafe fn add_polkavm_metadata(
     module: LLVMModuleRef,
     context: LLVMContextRef,
+    function: *mut llvm_sys::LLVMValue,
     fn_name: &str,
     num_args: u8,
 ) {
@@ -174,7 +175,7 @@ unsafe fn add_polkavm_metadata(
     let mut exports_values = [
         LLVMConstInt(LLVMInt8Type(), 1, 0), // version
         LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
-        LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
+        LLVMConstPointerCast(function, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
     ];
 
     let exports_constant = LLVMConstNamedStruct(exports_struct, exports_values.as_mut_ptr(), 3);
