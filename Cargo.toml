@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 llvm-sys = "191.0.0"
+hex = "0.4"

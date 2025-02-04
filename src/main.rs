@@ -1,6 +1,7 @@
 use llvm_sys::{core::*, prelude::*, target::*};
 use std::ffi::{CStr, CString};
 use std::fs::File;
+use std::hash::DefaultHasher;
 use std::io::Write;
 use std::os::raw::c_char;
 
@@ -23,10 +24,11 @@ fn main() {
 
         // --- 2) Create a Context & Module ---
         let context = LLVMContextCreate();
-        let module_name = cstr!("my_module");
-        let module = LLVMModuleCreateWithNameInContext(module_name, context);
+        let module_name = "my_module";
+        let module_name_c = cstr!("my_module");
+        let module = LLVMModuleCreateWithNameInContext(module_name_c, context);
 
-        let (builder, function) = add_function(context, module, "sum");
+        let (builder, function) = add_function(context, module, module_name, "sum");
         // --- 5) Get the function's parameters & build "sum" = a0 + a1 ---
         let a0 = LLVMGetParam(function, 0);
         let a1 = LLVMGetParam(function, 1);
@@ -35,7 +37,7 @@ fn main() {
         // --- 6) Return the result ---
         LLVMBuildRet(builder, sum);
 
-        let (builder, function) = add_function(context, module, "sub");
+        let (builder, function) = add_function(context, module, module_name, "sub");
         // --- 5) Get the function's parameters & build "mul" = a0 - a1 ---
         let a0 = LLVMGetParam(function, 0);
         let a1 = LLVMGetParam(function, 1);
@@ -64,7 +66,8 @@ fn main() {
 fn add_function(
     context: *mut llvm_sys::LLVMContext,
     module: *mut llvm_sys::LLVMModule,
-    name: &str,
+    module_name: &str,
+    fn_name: &str,
 ) -> (*mut llvm_sys::LLVMBuilder, *mut llvm_sys::LLVMValue) {
     unsafe {
         let i32_type = LLVMInt32TypeInContext(context);
@@ -75,13 +78,22 @@ fn add_function(
             param_types.len() as u32,
             0, // not variadic
         );
-        let fn_name = CString::new(name).unwrap();
-        let function = LLVMAddFunction(module, fn_name.as_ptr(), fn_type);
+        let hash = hash_string(format!("{}::{}", module_name, fn_name).as_str());
+        let mangled = format!(
+            "_ZN{}{}{}{}17h{}E",
+            module_name.len(),
+            module_name,
+            fn_name.len(),
+            fn_name,
+            hash
+        );
+        let fn_name_c = CString::new(mangled).unwrap();
+        let function = LLVMAddFunction(module, fn_name_c.as_ptr(), fn_type);
         // Set the custom section
-        let section_name = CString::new(format!(".text.polkavm_export.{}", name)).unwrap();
+        let section_name = CString::new(format!(".text.polkavm_export.{}", fn_name)).unwrap();
         LLVMSetSection(function, section_name.as_ptr());
 
-        add_polkavm_metadata(module, context, function, name, 2);
+        add_polkavm_metadata(module, context, function, module_name, fn_name, 2);
 
         // --- 4) Create a basic block & a builder to emit instructions ---
         let entry_bb = LLVMAppendBasicBlockInContext(context, function, cstr!("entry"));
@@ -96,10 +108,19 @@ unsafe fn add_polkavm_metadata(
     module: LLVMModuleRef,
     context: LLVMContextRef,
     function: *mut llvm_sys::LLVMValue,
+    module_name: &str,
     fn_name: &str,
     num_args: u8,
 ) {
     // Create the metadata
+    let mangled = format!(
+        "_ZN{}{}{}{}8METADATA17h{}E",
+        module_name.len(),
+        module_name,
+        fn_name.len(),
+        fn_name,
+        hash_string("METADATA")
+    );
     let metadata_str = CString::new(fn_name).unwrap();
     let metadata_global = LLVMAddGlobal(
         module,
@@ -107,7 +128,7 @@ unsafe fn add_polkavm_metadata(
             LLVMInt8TypeInContext(context),
             metadata_str.as_bytes().len() as u64 + 1,
         ),
-        CString::new("metadata_symbol").unwrap().as_ptr(),
+        metadata_str.as_ptr(),
     );
     LLVMSetSection(
         metadata_global,
@@ -153,7 +174,7 @@ unsafe fn add_polkavm_metadata(
     let metadata = LLVMAddGlobal(
         module,
         metadata_struct,
-        CString::new("metadata").unwrap().as_ptr(),
+        CString::new(mangled).unwrap().as_ptr(),
     );
     LLVMSetInitializer(metadata, metadata_constant);
     LLVMSetSection(
@@ -186,4 +207,12 @@ unsafe fn add_polkavm_metadata(
     );
     LLVMSetInitializer(exports, exports_constant);
     LLVMSetSection(exports, CString::new(".polkavm_exports").unwrap().as_ptr());
+}
+
+fn hash_string(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    let hash = hasher.finish();
+    hex::encode(hash.to_be_bytes())
 }
