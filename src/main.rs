@@ -1,4 +1,4 @@
-use llvm_sys::{core::*, prelude::*, target::*};
+use llvm_sys::{core::*, prelude::*, target::*, LLVMLinkage};
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::hash::DefaultHasher;
@@ -92,6 +92,7 @@ fn add_function(
         // Set the custom section
         let section_name = CString::new(format!(".text.polkavm_export.{}", fn_name)).unwrap();
         LLVMSetSection(function, section_name.as_ptr());
+        LLVMSetLinkage(function, LLVMLinkage::LLVMInternalLinkage);
 
         add_polkavm_metadata(module, context, function, module_name, fn_name, 2);
 
@@ -144,6 +145,7 @@ unsafe fn add_polkavm_metadata(
             0,
         ),
     );
+    LLVMSetLinkage(metadata_global, LLVMLinkage::LLVMInternalLinkage);
 
     // Define metadata structure
     let metadata_struct = LLVMStructType(
@@ -181,6 +183,7 @@ unsafe fn add_polkavm_metadata(
         metadata,
         CString::new(".polkavm_metadata").unwrap().as_ptr(),
     );
+    LLVMSetLinkage(metadata, LLVMLinkage::LLVMInternalLinkage);
 
     // now add the exports
     let exports_struct = LLVMStructType(
@@ -207,6 +210,7 @@ unsafe fn add_polkavm_metadata(
     );
     LLVMSetInitializer(exports, exports_constant);
     LLVMSetSection(exports, CString::new(".polkavm_exports").unwrap().as_ptr());
+    LLVMSetLinkage(exports, LLVMLinkage::LLVMInternalLinkage);
 }
 
 fn hash_string(s: &str) -> String {
