@@ -1,4 +1,4 @@
-use llvm_sys::{core::*, prelude::*, target::*, LLVMLinkage};
+use llvm_sys::{core::*, prelude::*, target::*, LLVMLinkage, LLVMUnnamedAddr};
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::hash::DefaultHasher;
@@ -127,7 +127,63 @@ unsafe fn add_polkavm_metadata(
     num_args: u8,
     asm: &mut String,
 ) {
-    // Create the metadata
+    // Create the metadata symbol
+    let i8_type = LLVMInt8TypeInContext(context);
+    let array_ty = LLVMArrayType2(i8_type, fn_name.len() as u64);
+
+    let mut struct_field_types = [array_ty];
+    let struct_ty = LLVMStructType(struct_field_types.as_mut_ptr(), 1, 0);
+    let text = CString::new(fn_name).unwrap();
+    let const_array = LLVMConstStringInContext2(context, text.as_ptr(), text.as_bytes().len(), 1);
+    let mut struct_values = [const_array];
+    let const_struct = LLVMConstStruct(struct_values.as_mut_ptr(), 1, 0);
+    let hashed = hash_string(fn_name);
+    let metadata_str = CString::new(format!("alloc_{}", hashed)).unwrap();
+    let metadata_global = LLVMAddGlobal(module, struct_ty, metadata_str.as_ptr());
+    LLVMSetInitializer(metadata_global, const_struct);
+    LLVMSetLinkage(metadata_global, LLVMLinkage::LLVMPrivateLinkage);
+    LLVMSetUnnamedAddress(metadata_global, LLVMUnnamedAddr::LLVMGlobalUnnamedAddr);
+    LLVMSetAlignment(metadata_global, 1);
+    LLVMSetGlobalConstant(metadata_global, 1);
+    LLVMSetSection(
+        metadata_global,
+        CString::new(format!(".rodata..Lalloc_{}", hashed))
+            .unwrap()
+            .as_ptr(),
+    );
+
+    // Define metadata data
+    let i8_type = LLVMInt8TypeInContext(context);
+    let ptr_type = LLVMPointerType(i8_type, 0);
+    let arr9_type = LLVMArrayType2(i8_type, 9);
+    let arr2_type = LLVMArrayType2(i8_type, 2);
+    let mut field_types = [arr9_type, ptr_type, arr2_type];
+    let metadata_struct_ty = LLVMStructType(field_types.as_mut_ptr(), 3, 1);
+    let mut byte_consts_field0 = Vec::with_capacity(9);
+    // version
+    byte_consts_field0.push(LLVMConstInt(i8_type, 1, 0));
+    // flags -> 0
+    for _ in 0..4 {
+        byte_consts_field0.push(LLVMConstInt(i8_type, 0, 0));
+    }
+    // function name length
+    let bytes_field0 = (fn_name.len() as u32).to_le_bytes();
+    for &b in &bytes_field0 {
+        byte_consts_field0.push(LLVMConstInt(i8_type, b as u64, 0));
+    }
+    // pointer to the symbol
+    let const_arr9 = LLVMConstArray2(i8_type, byte_consts_field0.as_mut_ptr(), 9);
+    let const_ptr = LLVMConstPointerCast(metadata_global, ptr_type);
+    // number of input and output args
+    let bytes_field2: [u64; 2] = [num_args as u64, 1];
+    let mut byte_consts_field2 = Vec::with_capacity(2);
+    for &b in &bytes_field2 {
+        byte_consts_field2.push(LLVMConstInt(i8_type, b, 0));
+    }
+    let const_arr2 = LLVMConstArray2(i8_type, byte_consts_field2.as_mut_ptr(), 2);
+    let mut metadata_fields = [const_arr9, const_ptr, const_arr2];
+    let metadata_const = LLVMConstStruct(metadata_fields.as_mut_ptr(), 3, 1);
+
     let mangled = format!(
         "_ZN{}{}{}{}8METADATA17h{}E",
         module_name.len(),
@@ -136,64 +192,14 @@ unsafe fn add_polkavm_metadata(
         fn_name,
         hash_string("METADATA")
     );
-    let metadata_str = CString::new(fn_name).unwrap();
-    let metadata_global = LLVMAddGlobal(
-        module,
-        LLVMArrayType2(
-            LLVMInt8TypeInContext(context),
-            metadata_str.as_bytes().len() as u64 + 1,
-        ),
-        metadata_str.as_ptr(),
-    );
-    LLVMSetSection(
-        metadata_global,
-        CString::new(format!(".rodata.{}_metadata", fn_name))
-            .unwrap()
-            .as_ptr(),
-    );
-    LLVMSetInitializer(
-        metadata_global,
-        LLVMConstString(
-            metadata_str.as_ptr(),
-            metadata_str.as_bytes().len() as u32,
-            0,
-        ),
-    );
-    LLVMSetLinkage(metadata_global, LLVMLinkage::LLVMInternalLinkage);
-
-    // Define metadata structure
-    let metadata_struct = LLVMStructType(
-        [
-            LLVMInt8Type(),
-            LLVMInt32Type(),
-            LLVMInt32Type(),
-            LLVMPointerType(LLVMInt8Type(), 0),
-            LLVMInt8Type(),
-            LLVMInt8Type(),
-        ]
-        .as_mut_ptr(),
-        6,
-        0,
-    );
-
-    // Initialize metadata with values
-    let mut metadata_values = [
-        LLVMConstInt(LLVMInt8Type(), 1, 0),  // version
-        LLVMConstInt(LLVMInt32Type(), 1, 0), // flags
-        LLVMConstInt(LLVMInt32Type(), metadata_str.as_bytes().len() as u64, 0), // symbol length
-        LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
-        LLVMConstInt(LLVMInt8Type(), num_args as u64, 0),
-        LLVMConstInt(LLVMInt8Type(), 1, 0),
-    ];
-
-    let metadata_constant = LLVMConstStruct(metadata_values.as_mut_ptr(), 6, 0);
     let metadata = LLVMAddGlobal(
         module,
-        metadata_struct,
+        metadata_struct_ty,
         CString::new(mangled.clone()).unwrap().as_ptr(),
     );
-    LLVMSetInitializer(metadata, metadata_constant);
-    LLVMSetAlignment(metadata, 0);
+    LLVMSetInitializer(metadata, metadata_const);
+    LLVMSetAlignment(metadata, 1);
+    LLVMSetGlobalConstant(metadata, 1);
     LLVMSetSection(
         metadata,
         CString::new(".polkavm_metadata").unwrap().as_ptr(),
