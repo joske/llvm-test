@@ -27,8 +27,11 @@ fn main() {
         let module_name = "my_module";
         let module_name_c = cstr!("my_module");
         let module = LLVMModuleCreateWithNameInContext(module_name_c, context);
+        LLVMSetDataLayout(module, cstr!("e-m:e-p:32:32-i64:64-n32-S32"));
+        LLVMSetTarget(module, cstr!("riscv"));
 
-        let (builder, function) = add_function(context, module, module_name, "sum");
+        let mut asm = String::with_capacity(100);
+        let (builder, function) = add_function(context, module, module_name, "sum", &mut asm);
         // --- 5) Get the function's parameters & build "sum" = a0 + a1 ---
         let a0 = LLVMGetParam(function, 0);
         let a1 = LLVMGetParam(function, 1);
@@ -37,7 +40,7 @@ fn main() {
         // --- 6) Return the result ---
         LLVMBuildRet(builder, sum);
 
-        let (builder, function) = add_function(context, module, module_name, "sub");
+        let (builder, function) = add_function(context, module, module_name, "sub", &mut asm);
         // --- 5) Get the function's parameters & build "mul" = a0 - a1 ---
         let a0 = LLVMGetParam(function, 0);
         let a1 = LLVMGetParam(function, 1);
@@ -46,6 +49,7 @@ fn main() {
         // --- 6) Return the result ---
         LLVMBuildRet(builder, sub);
 
+        LLVMSetModuleInlineAsm2(module, asm.as_ptr(), asm.len());
         // --- 7) Print out the module as LLVM IR ---
         let ir_str_ptr = LLVMPrintModuleToString(module);
         let ir_str = CStr::from_ptr(ir_str_ptr);
@@ -68,6 +72,7 @@ fn add_function(
     module: *mut llvm_sys::LLVMModule,
     module_name: &str,
     fn_name: &str,
+    asm: &mut String,
 ) -> (*mut llvm_sys::LLVMBuilder, *mut llvm_sys::LLVMValue) {
     unsafe {
         let i32_type = LLVMInt32TypeInContext(context);
@@ -87,14 +92,22 @@ fn add_function(
             fn_name,
             hash
         );
-        let fn_name_c = CString::new(mangled).unwrap();
+        let fn_name_c = CString::new(mangled.clone()).unwrap();
         let function = LLVMAddFunction(module, fn_name_c.as_ptr(), fn_type);
         // Set the custom section
         let section_name = CString::new(format!(".text.polkavm_export.{}", fn_name)).unwrap();
         LLVMSetSection(function, section_name.as_ptr());
         LLVMSetLinkage(function, LLVMLinkage::LLVMInternalLinkage);
 
-        add_polkavm_metadata(module, context, function, module_name, fn_name, 2);
+        add_polkavm_metadata(
+            module,
+            context,
+            module_name,
+            fn_name,
+            mangled.as_str(),
+            2,
+            asm,
+        );
 
         // --- 4) Create a basic block & a builder to emit instructions ---
         let entry_bb = LLVMAppendBasicBlockInContext(context, function, cstr!("entry"));
@@ -108,10 +121,11 @@ fn add_function(
 unsafe fn add_polkavm_metadata(
     module: LLVMModuleRef,
     context: LLVMContextRef,
-    function: *mut llvm_sys::LLVMValue,
     module_name: &str,
     fn_name: &str,
+    mangled_fn_name: &str,
     num_args: u8,
+    asm: &mut String,
 ) {
     // Create the metadata
     let mangled = format!(
@@ -165,52 +179,34 @@ unsafe fn add_polkavm_metadata(
     // Initialize metadata with values
     let mut metadata_values = [
         LLVMConstInt(LLVMInt8Type(), 1, 0),  // version
-        LLVMConstInt(LLVMInt32Type(), 0, 0), // flags
+        LLVMConstInt(LLVMInt32Type(), 1, 0), // flags
         LLVMConstInt(LLVMInt32Type(), metadata_str.as_bytes().len() as u64, 0), // symbol length
         LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
         LLVMConstInt(LLVMInt8Type(), num_args as u64, 0),
         LLVMConstInt(LLVMInt8Type(), 1, 0),
     ];
 
-    let metadata_constant = LLVMConstNamedStruct(metadata_struct, metadata_values.as_mut_ptr(), 6);
+    let metadata_constant = LLVMConstStruct(metadata_values.as_mut_ptr(), 6, 0);
     let metadata = LLVMAddGlobal(
         module,
         metadata_struct,
-        CString::new(mangled).unwrap().as_ptr(),
+        CString::new(mangled.clone()).unwrap().as_ptr(),
     );
     LLVMSetInitializer(metadata, metadata_constant);
+    LLVMSetAlignment(metadata, 0);
     LLVMSetSection(
         metadata,
         CString::new(".polkavm_metadata").unwrap().as_ptr(),
     );
     LLVMSetLinkage(metadata, LLVMLinkage::LLVMInternalLinkage);
 
-    // now add the exports
-    let exports_struct = LLVMStructType(
-        [
-            LLVMInt8Type(),
-            LLVMPointerType(LLVMInt8Type(), 0),
-            LLVMPointerType(LLVMInt8Type(), 0),
-        ]
-        .as_mut_ptr(),
-        3,
-        0,
+    asm.push_str(
+        format!(
+        ".pushsection .polkavm_exports,\"R\",@note\n.byte 1\n.4byte {}\n.4byte {}\n.popsection\n",
+        mangled, mangled_fn_name
+    )
+        .as_str(),
     );
-    let mut exports_values = [
-        LLVMConstInt(LLVMInt8Type(), 1, 0), // version
-        LLVMConstPointerCast(metadata_global, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
-        LLVMConstPointerCast(function, LLVMPointerType(LLVMInt8Type(), 0)), // pointer to symbol
-    ];
-
-    let exports_constant = LLVMConstNamedStruct(exports_struct, exports_values.as_mut_ptr(), 3);
-    let exports = LLVMAddGlobal(
-        module,
-        exports_struct,
-        CString::new("exports").unwrap().as_ptr(),
-    );
-    LLVMSetInitializer(exports, exports_constant);
-    LLVMSetSection(exports, CString::new(".polkavm_exports").unwrap().as_ptr());
-    LLVMSetLinkage(exports, LLVMLinkage::LLVMInternalLinkage);
 }
 
 fn hash_string(s: &str) -> String {
